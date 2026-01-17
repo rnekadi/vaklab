@@ -13,12 +13,19 @@ logger = logging.getLogger(__name__)
 
 # --- Metna Agent (The LLM) ---
 
+# --- Metna Agent (The LLM) ---
+
 class MetnaAgent(LlmAgent):
-    def __init__(self):
-        super().__init__(
-            name="Metna",
-            model="gemini-2.0-flash-exp",
-            instruction="""
+    def __init__(self, member_data=None):
+        # Defaults
+        first_name = "Valued Member"
+        campaign = "Healthy Habits Program"
+        
+        if member_data:
+            first_name = member_data.get("first_name", first_name)
+            campaign = member_data.get("campaign_name", campaign)
+
+        base_instruction = """
 ## Persona & Tone
 - Name: Metna, from Metna Insurance.
 - Tone: Empathetic, warm, and professional. 
@@ -27,7 +34,7 @@ class MetnaAgent(LlmAgent):
 ## Core States & Workflow
 
 ### State 1: The Hook (Initial Contact)
-- Action: Greet the user and ask: "Hello, this is Metna, an AI assistant from Metna Insurance. I'm calling regarding the Metna Healthy Habits Program. Is this a good time to discuss this further with my customer service colleague?"
+- Action: Greet the user and ask: "Hello {member_first_name}, this is Metna, an AI assistant from Metna Insurance. I'm calling regarding the {campaign_name}. Is this a good time to discuss this further with my customer service colleague?"
 - Transition: If "Yes" -> Move to State 2. If "No" -> Politeness and Hangup.
 
 ### State 2: The Bridge (Transfer Initiated)
@@ -38,14 +45,24 @@ class MetnaAgent(LlmAgent):
 
 ### State 3: The Handover (Agent Joined)
 - Trigger: When `is_agent_joined` == True.
-- Action: Interrupt yourself if necessary. Say: "My colleague is here now. You are in good hands! Have a wonderful rest of your day."
+- Action: Interrupt yourself if necessary. Say: "My colleague {csr_name} is here now. You are in good hands! Have a wonderful rest of your day."
 - Final Action: Immediately call `end_call`.
 
 ## Handling Objections (Few-Shot Examples)
 - User: "What is this program about?"
 - Thinking: User needs a brief value prop before agreeing to transfer.
 - Speech: "It’s our initiative to reward healthy lifestyles with premium discounts. My colleague has all your specific details ready to go—shall I bring them in?"
-""",
+"""
+        # Format the prompt with specific user data
+        formatted_instruction = base_instruction.format(
+            member_first_name=first_name,
+            campaign_name=campaign
+        )
+
+        super().__init__(
+            name="Metna",
+            model="gemini-2.0-flash-exp",
+            instruction=formatted_instruction,
             tools=[transfer_to_human, end_call]
         )
 
@@ -53,10 +70,10 @@ class MetnaAgent(LlmAgent):
 
 class WarmHugTransferAgent(BaseAgent):
     def __init__(self):
-        self.metna = MetnaAgent()
+        # We don't instantiate Metna here anymore because we need it per-session
         super().__init__(
             name="WarmHugTransferAgent",
-            sub_agents=[self.metna]
+            sub_agents=[] # Dynamic
         )
 
     def _ensure_state_safety(self, state):
@@ -73,8 +90,26 @@ class WarmHugTransferAgent(BaseAgent):
     async def _run_live_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         self._ensure_state_safety(ctx.session.state)
         
-        # In this specific "Warm Hug" use case, Metna handles the whole flow
-        async for event in self.metna.run_live(ctx):
+        # 1. Look up user data
+        phone_number = ctx.user_id # Expecting phone number as user_id
+        logging.info(f"Orchestrator starting for phone: {phone_number}")
+        
+        from .tools import _get_member_data
+        member_data = _get_member_data(phone_number)
+        
+        if member_data:
+            logging.info(f"Found member: {member_data.get('first_name')}")
+            # Inject into state just in case tools need it later
+            for k, v in member_data.items():
+                ctx.session.state[k] = v
+        else:
+            logging.warning("No member data found via DB lookup.")
+
+        # 2. Instantiate Metna with context
+        metna_agent = MetnaAgent(member_data=member_data)
+        
+        # 3. Run the tailored agent
+        async for event in metna_agent.run_live(ctx):
             yield event
             
             # Logic to terminate if the LLM decides the conversation is over 

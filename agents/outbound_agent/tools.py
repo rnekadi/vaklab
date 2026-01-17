@@ -8,17 +8,13 @@ from google.adk.tools import ToolContext
 from google.adk.agents.invocation_context import InvocationContext
 from utils.db import get_db_connection
 
-def lookup_member_info(phone_number: str, tool_context: ToolContext):
-    """Fetches member data from the 'target_members_detail' table using phone number."""
-    logging.info(f"lookup_member_info called with phone: {phone_number}")
+def _get_member_data(phone_number: str):
+    """Raw helper to fetch member data dict from DB."""
     conn = get_db_connection()
     if not conn:
-        logging.error("Database connection failed!")
-        return {"status": "error", "message": "Database connection failed"}
-    
+        return None
     try:
         cur = conn.cursor()
-        # Query matching the new schema for Healthy Habits campaign
         query = """
             SELECT member_id, member_first_name, member_last_name, member_email, campaign_name, csr_name, csr_phone_number
             FROM target_members_detail
@@ -26,32 +22,47 @@ def lookup_member_info(phone_number: str, tool_context: ToolContext):
         """
         cur.execute(query, (phone_number,))
         result = cur.fetchone()
-        
         if result:
             member_id, first_name, last_name, email, campaign, csr_name, csr_phone = result
-            
-            # Populate state for the Agent to use
-            tool_context.state["member_name"] = f"{first_name} {last_name}"
-            tool_context.state["first_name"] = first_name
-            tool_context.state["email"] = email
-            tool_context.state["campaign_name"] = campaign
-            tool_context.state["csr_name"] = csr_name
-            
-            logging.info(f"Member found: {first_name} {last_name}, Campaign: {campaign}")
-            return {"status": "success", "message": "Member data loaded into state."}
-        else:
-            logging.warning(f"No member found for phone: {phone_number}")
-            tool_context.state["member_name"] = "Valued Member"
-            tool_context.state["is_data_missing"] = True
-            return {"status": "error", "message": "No member found."}
-    
+            return {
+                "member_id": member_id,
+                "first_name": first_name,
+                "last_name": last_name,
+                "name": f"{first_name} {last_name}",
+                "email": email,
+                "campaign_name": campaign,
+                "csr_name": csr_name,
+                "csr_phone": csr_phone
+            }
+        return None
     except Exception as e:
-        logging.error(f"Error checking database: {e}")
-        tool_context.state["member_name"] = "Valued Member"
-        return {"status": "error", "message": str(e)}
+        logging.error(f"DB Lookup Error: {e}")
+        return None
     finally:
         if conn:
             conn.close()
+
+def lookup_member_info(phone_number: str, tool_context: ToolContext):
+    """Fetches member data from the 'target_members_detail' table using phone number."""
+    logging.info(f"lookup_member_info called with phone: {phone_number}")
+    
+    data = _get_member_data(phone_number)
+    
+    if data:
+        # Populate state for the Agent to use (if called as a tool)
+        tool_context.state["member_name"] = data["name"]
+        tool_context.state["first_name"] = data["first_name"]
+        tool_context.state["email"] = data["email"]
+        tool_context.state["campaign_name"] = data["campaign_name"]
+        tool_context.state["csr_name"] = data["csr_name"]
+        
+        logging.info(f"Member found: {data['name']}, Campaign: {data['campaign_name']}")
+        return {"status": "success", "message": "Member data loaded into state."}
+    else:
+        logging.warning(f"No member found for phone: {phone_number}")
+        tool_context.state["member_name"] = "Valued Member"
+        tool_context.state["is_data_missing"] = True
+        return {"status": "error", "message": "No member found."}
 
 def trigger_dtmf_payment(amount: float, tool_context: ToolContext):
     """Signals the system to hijack the audio for secure PCI card entry."""
