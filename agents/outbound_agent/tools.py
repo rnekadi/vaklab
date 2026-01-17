@@ -30,9 +30,9 @@ def get_db_connection():
         logging.error(f"Failed to connect to DB: {e}")
         return None
 
-def lookup_debtor_info(phone_number: str, tool_context: ToolContext):
-    """Fetches debtor data from the 'debtors' table in PostgreSQL using phone number."""
-    logging.info(f"lookup_debtor_info called with phone: {phone_number}")
+def lookup_member_info(phone_number: str, tool_context: ToolContext):
+    """Fetches member data from the 'target_members' table using phone number."""
+    logging.info(f"lookup_member_info called with phone: {phone_number}")
     conn = get_db_connection()
     if not conn:
         logging.error("Database connection failed!")
@@ -40,47 +40,38 @@ def lookup_debtor_info(phone_number: str, tool_context: ToolContext):
     
     try:
         cur = conn.cursor()
-        # Expecting table 'debtors' with columns matching our needs
-        # We need: name, ssn_last4, dob, balance, email, payment_plan_qualified
+        # Query matching the new schema for Healthy Habits campaign
         query = """
-            SELECT account_number, first_name, last_name, ssn, dob, balance, email, payment_plan_qualified
-            FROM debtors
+            SELECT member_id, member_first_name, member_last_name, member_email, campaign_targeted_for, csr_name, csr_phone_number
+            FROM target_members
             WHERE phone_number = %s
         """
         cur.execute(query, (phone_number,))
         result = cur.fetchone()
         
         if result:
-            account_number, first_name, last_name, ssn, dob, balance, email, payment_plan_qualified = result
+            member_id, first_name, last_name, email, campaign, csr_name, csr_phone = result
             
-            # Populate state
-            tool_context.state["debtor_name"] = f"{first_name} {last_name}"
-            tool_context.state["true_ssn_last4"] = ssn[-4:] if ssn else "UNKNOWN"
-            tool_context.state["true_dob"] = dob
-            tool_context.state["balance"] = float(balance)
+            # Populate state for the Agent to use
+            tool_context.state["member_name"] = f"{first_name} {last_name}"
+            tool_context.state["first_name"] = first_name
             tool_context.state["email"] = email
-            tool_context.state["payment_plan_qualified"] = bool(payment_plan_qualified)
-            tool_context.state["account_number"] = str(account_number)
+            tool_context.state["campaign_name"] = campaign
+            tool_context.state["csr_name"] = csr_name
+            # We might want to store the internal transfer number if dynamic
+            # tool_context.state["transfer_number"] = csr_phone 
             
-            logging.info(f"Debtor found: {first_name} {last_name}, balance: {balance}")
-            return {"status": "success", "message": "Data loaded into state."}
+            logging.info(f"Member found: {first_name} {last_name}, Campaign: {campaign}")
+            return {"status": "success", "message": "Member data loaded into state."}
         else:
-            logging.warning(f"No debtor found for phone: {phone_number}")
-            # Ensure critical keys exist to prevent ADK injection crashes
-            tool_context.state["debtor_name"] = "UNKNOWN"
-            tool_context.state["true_ssn_last4"] = "0000"
-            tool_context.state["balance"] = 0.0
-            tool_context.state["payment_plan_qualified"] = False
+            logging.warning(f"No member found for phone: {phone_number}")
+            tool_context.state["member_name"] = "Valued Member"
             tool_context.state["is_data_missing"] = True
-            return {"status": "error", "message": "No debtor found. Do not guess information."}
+            return {"status": "error", "message": "No member found."}
     
     except Exception as e:
         logging.error(f"Error checking database: {e}")
-        # Initialization safety even on exception
-        tool_context.state["debtor_name"] = "SYSTEM_ERROR"
-        tool_context.state["true_ssn_last4"] = "0000"
-        tool_context.state["balance"] = 0.0
-        tool_context.state["payment_plan_qualified"] = False
+        tool_context.state["member_name"] = "Valued Member"
         return {"status": "error", "message": str(e)}
     finally:
         if conn:
