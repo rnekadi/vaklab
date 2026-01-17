@@ -18,12 +18,14 @@ logger = logging.getLogger(__name__)
 class MetnaAgent(LlmAgent):
     def __init__(self, member_data=None):
         # Defaults
-        first_name = "Valued Member"
+        first_name = "Raju"
         campaign = "Healthy Habits Program"
+        csr_name = "Kenny Abadge"
         
         if member_data:
             first_name = member_data.get("first_name", first_name)
             campaign = member_data.get("campaign_name", campaign)
+            csr_name = member_data.get("csr_name", csr_name)
 
         base_instruction = """
 ## Persona & Tone
@@ -56,7 +58,8 @@ class MetnaAgent(LlmAgent):
         # Format the prompt with specific user data
         formatted_instruction = base_instruction.format(
             member_first_name=first_name,
-            campaign_name=campaign
+            campaign_name=campaign,
+            csr_name=csr_name
         )
 
         super().__init__(
@@ -95,7 +98,15 @@ class WarmHugTransferAgent(BaseAgent):
         logging.info(f"Orchestrator starting for phone: {phone_number}")
         
         from .tools import _get_member_data
-        member_data = _get_member_data(phone_number)
+        
+        # In routers/outbound_twillio.py, we stored 'member_id' and 'campaign' in the call/context
+        # We need to ensure we can access them here. 
+        # Typically, custom parameters from Twilio come in ctx.session.state via the websocket "customParameters"
+        
+        member_id = ctx.session.state.get("member_id")
+        campaign_name = ctx.session.state.get("campaign")
+        
+        member_data = _get_member_data(phone_number, member_id, campaign_name)
         
         if member_data:
             logging.info(f"Found member: {member_data.get('first_name')}")
@@ -119,7 +130,24 @@ class WarmHugTransferAgent(BaseAgent):
 
     @override
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-        async for event in self.metna.run_async(ctx):
+        # Logic similar to _run_live_impl but for async text chat
+        self._ensure_state_safety(ctx.session.state)
+        
+        # 1. Lookup (Optional for text chat debug, but good to have)
+        from .tools import _get_member_data
+        
+        phone_number = ctx.user_id 
+        member_id = ctx.session.state.get("member_id")
+        campaign_name = ctx.session.state.get("campaign")
+        
+        # Try lookup
+        member_data = _get_member_data(phone_number, member_id, campaign_name)
+        
+        # 2. Instantiate
+        metna_agent = MetnaAgent(member_data=member_data)
+        
+        # 3. Run
+        async for event in metna_agent.run_async(ctx):
             yield event
 
 # --- Export ---

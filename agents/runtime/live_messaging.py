@@ -48,9 +48,13 @@ APP_NAME = "METNA OUTBOUND AGENT"
 LiveEvents = AsyncGenerator[Event, None]
 
 
+# Global registry to allow external webhooks to find active sessions
+# Key: session_id (which is call_sid), Value: (session_object, live_request_queue)
+ACTIVE_SESSIONS = {}
+
 # TODO: Make this *dynamic*
 async def start_agent_session(
-    user_id: str, session_id: str
+    user_id: str, session_id: str, initial_state: dict = None
 ) -> tuple[LiveEvents, LiveRequestQueue]:
     """Starts an agent session"""
 
@@ -66,6 +70,11 @@ async def start_agent_session(
         user_id=user_id,
         session_id=session_id,
     )
+    
+    # Seed initial state if provided
+    if initial_state:
+        for k, v in initial_state.items():
+            session.state[k] = v
 
     speech_config = types.SpeechConfig(
         voice_config=types.VoiceConfig(
@@ -98,6 +107,9 @@ async def start_agent_session(
     )
 
     live_request_queue = LiveRequestQueue()
+    
+    # Register session for webhooks
+    ACTIVE_SESSIONS[session_id] = (session, live_request_queue)
 
     live_events = runner.run_live(
         # user_id=user_id, # Using the suggested args fails to create session
