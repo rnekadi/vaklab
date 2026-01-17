@@ -28,6 +28,7 @@ from utils.audio import (
 from utils.env import is_local
 from utils.logging import logger
 from utils.security import validate_twilio
+from utils.db import get_db_connection
 
 
 twilio_path = "/twilio"
@@ -81,23 +82,85 @@ def twilio_callback(payload: Annotated[TwilioStreamCallbackPayload, Form()]):
 
 
 @router.post("/outbound-call")
-async def make_call(phone_number: str):
-    """Make an outbound call via Twilio"""
+async def make_call():
+    """Make an outbound call by picking the next target from the database"""
     if not DOMAIN:
         return {"error": "DOMAIN environment variable not set"}
-    phone_number = phone_number.strip()
+    
     clean_domain = DOMAIN.replace("https://", "").replace("http://", "")
+    
+    conn = get_db_connection()
+    if not conn:
+        return {"error": "Database connection failed"}
+
     try:
-        twilio_client = get_twilio_client()
-        call = twilio_client.calls.create(
-            to=phone_number,
-            from_=TWILIO_NUMBER,
-            url=f"https://{clean_domain}{twilio_path}/voice-entry?phone={phone_number}"
-        )
-        return {"status": "queued", "call_sid": call.sid}
+        cur = conn.cursor()
+        
+        # 1. Fetch next 'Not Called' member (Queue logic)
+        cur.execute("""
+            SELECT member_id, phone_number, campaign_name 
+            FROM campaign_target_member_call_list 
+            WHERE call_status = 'Not Called' 
+            LIMIT 1 
+            FOR UPDATE SKIP LOCKED
+        """)
+        row = cur.fetchone()
+        
+        if not row:
+            conn.rollback() # Release lock if no rows
+            return {"status": "info", "message": "No numbers to call"}
+        
+        member_id, phone_number, campaign_name = row
+        phone_number = phone_number.strip()
+        
+        # 2. Mark as Calling
+        cur.execute("""
+            UPDATE campaign_target_member_call_list 
+            SET call_status = 'Calling' 
+            WHERE member_id = %s
+        """, (member_id,))
+        
+        conn.commit()
+        logger.info(f"Picked member {member_id} ({phone_number}) for campaign {campaign_name}")
+
+        # 3. Initiate Call
+        try:
+            twilio_client = get_twilio_client()
+            call = twilio_client.calls.create(
+                to=phone_number,
+                from_=TWILIO_NUMBER,
+                url=f"https://{clean_domain}{twilio_path}/voice-entry?phone={phone_number}"
+            )
+            return {
+                "status": "queued", 
+                "call_sid": call.sid, 
+                "member_id": member_id, 
+                "campaign": campaign_name
+            }
+        except Exception as twilio_ex:
+            logger.error(f"Twilio Call Failed: {twilio_ex}")
+            # Revert status if call fails to launch
+            # Note: We create a new cursor/connection or reuse judiciously. 
+            # Re-using 'cur' here is fine since previous transaction committed.
+            try:
+                cur.execute("""
+                    UPDATE campaign_target_member_call_list 
+                    SET call_status = 'Failed' 
+                    WHERE member_id = %s
+                """, (member_id,))
+                conn.commit()
+            except:
+                pass
+            return {"error": f"Twilio start failed: {str(twilio_ex)}"}
+
     except Exception as ex:
-        logger.exception(f"Twilio API error: {ex}")
+        if conn:
+            conn.rollback()
+        logger.exception(f"DB Error in make_call: {ex}")
         return {"error": str(ex)}
+    finally:
+        if conn:
+            conn.close()
 
 
 @router.post("/voice-entry")

@@ -1,9 +1,7 @@
-# https://github.com/openai/openai-agents-python/issues/304#issuecomment-2746073108
 
 import audioop
 import numpy as np
 import soxr
-
 
 # Inbound: Twilio 8-bit 8kHz μ-law -> 16-bit 16kHz PCM for ADK
 def twilio_ulaw8k_to_adk_pcm16k(mulaw_bytes: bytes) -> bytes:

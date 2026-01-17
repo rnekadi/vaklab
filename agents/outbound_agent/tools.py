@@ -1,90 +1,102 @@
 import os
 import logging
-import psycopg2
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from google.adk.tools import ToolContext
-from google.adk.agents.invocation_context import InvocationContext
+import sys
+import os
 
-# --- Constants ---
-# Assuming standard env vars. 
-# Defaults provided for safety, but should be set in environment.
-DB_HOST = os.environ.get("DB_HOST", "localhost")
-DB_NAME = os.environ.get("DB_NAME", "debt_collection_db")
-DB_USER = os.environ.get("DB_USER", "user")
-DB_PASS = os.environ.get("DB_PASSWORD", "password")
+# Ensure we can import from project root 'utils' even if running from subfolder
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, "../../.."))
 
-def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS
-        )
-        return conn
-    except Exception as e:
-        logging.error(f"Failed to connect to DB: {e}")
-        return None
+# Use insert(0) to prioritize our project root over other paths (like potentially a site-packages utils)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+    # print(f"DEBUG: Added {project_root} to sys.path", file=sys.stderr)
 
-def lookup_debtor_info(phone_number: str, tool_context: ToolContext):
-    """Fetches debtor data from the 'debtors' table in PostgreSQL using phone number."""
-    logging.info(f"lookup_debtor_info called with phone: {phone_number}")
+# Fallback: try one level deeper if 'agents' is root
+agent_root = os.path.abspath(os.path.join(current_dir, "../.."))
+if agent_root not in sys.path:
+    sys.path.insert(0, agent_root)
+
+from utils.db import get_db_connection
+
+def _get_member_data(phone_number: str, member_id: str = None, campaign_name: str = None):
+    """Raw helper to fetch member data dict from DB using strict matching."""
     conn = get_db_connection()
     if not conn:
-        logging.error("Database connection failed!")
-        return {"status": "error", "message": "Database connection failed"}
-    
+        return None
     try:
         cur = conn.cursor()
-        # Expecting table 'debtors' with columns matching our needs
-        # We need: name, ssn_last4, dob, balance, email, payment_plan_qualified
-        query = """
-            SELECT account_number, first_name, last_name, ssn, dob, balance, email, payment_plan_qualified
-            FROM debtors
-            WHERE phone_number = %s
-        """
-        cur.execute(query, (phone_number,))
+        
+        # Build query dynamically based on available filters, but prioritize strictness
+        if member_id and campaign_name:
+            query = """
+                SELECT member_id, member_first_name, member_last_name, member_email, campaign_name, csr_name, csr_phone_number
+                FROM target_members_detail
+                WHERE phone_number = %s AND member_id = %s AND campaign_name = %s
+            """
+            params = (phone_number, member_id, campaign_name)
+        else:
+            # Fallback for legacy calls (though we should avoid this)
+            logging.warning("Loose lookup performed (missing member_id/campaign)")
+            query = """
+                SELECT member_id, member_first_name, member_last_name, member_email, campaign_name, csr_name, csr_phone_number
+                FROM target_members_detail
+                WHERE phone_number = %s
+            """
+            params = (phone_number,)
+
+        cur.execute(query, params)
         result = cur.fetchone()
         
         if result:
-            account_number, first_name, last_name, ssn, dob, balance, email, payment_plan_qualified = result
-            
-            # Populate state
-            tool_context.state["debtor_name"] = f"{first_name} {last_name}"
-            tool_context.state["true_ssn_last4"] = ssn[-4:] if ssn else "UNKNOWN"
-            tool_context.state["true_dob"] = dob
-            tool_context.state["balance"] = float(balance)
-            tool_context.state["email"] = email
-            tool_context.state["payment_plan_qualified"] = bool(payment_plan_qualified)
-            tool_context.state["account_number"] = str(account_number)
-            
-            logging.info(f"Debtor found: {first_name} {last_name}, balance: {balance}")
-            return {"status": "success", "message": "Data loaded into state."}
-        else:
-            logging.warning(f"No debtor found for phone: {phone_number}")
-            # Ensure critical keys exist to prevent ADK injection crashes
-            tool_context.state["debtor_name"] = "UNKNOWN"
-            tool_context.state["true_ssn_last4"] = "0000"
-            tool_context.state["balance"] = 0.0
-            tool_context.state["payment_plan_qualified"] = False
-            tool_context.state["is_data_missing"] = True
-            return {"status": "error", "message": "No debtor found. Do not guess information."}
-    
+            member_id, first_name, last_name, email, campaign, csr_name, csr_phone = result
+            return {
+                "member_id": member_id,
+                "first_name": first_name,
+                "last_name": last_name,
+                "name": f"{first_name} {last_name}",
+                "email": email,
+                "campaign_name": campaign,
+                "csr_name": csr_name,
+                "csr_phone": csr_phone
+            }
+        return None
     except Exception as e:
-        logging.error(f"Error checking database: {e}")
-        # Initialization safety even on exception
-        tool_context.state["debtor_name"] = "SYSTEM_ERROR"
-        tool_context.state["true_ssn_last4"] = "0000"
-        tool_context.state["balance"] = 0.0
-        tool_context.state["payment_plan_qualified"] = False
-        return {"status": "error", "message": str(e)}
+        logging.error(f"DB Lookup Error: {e}")
+        return None
     finally:
         if conn:
             conn.close()
+
+def lookup_member_info(phone_number: str, tool_context: ToolContext):
+    """Fetches member data. Note: Tool usage typically lacks extra context, so this might rely on loose lookup or state."""
+    logging.info(f"lookup_member_info called with phone: {phone_number}")
+    
+    # Try to extract extra context from state if available
+    member_id = tool_context.state.get("member_id")
+    campaign_name = tool_context.state.get("campaign_name")
+    
+    data = _get_member_data(phone_number, member_id, campaign_name)
+    
+    if data:
+        tool_context.state["member_name"] = data["name"]
+        tool_context.state["first_name"] = data["first_name"]
+        tool_context.state["email"] = data["email"]
+        tool_context.state["campaign_name"] = data["campaign_name"]
+        tool_context.state["csr_name"] = data["csr_name"]
+        
+        logging.info(f"Member found: {data['name']}, Campaign: {data['campaign_name']}")
+        return {"status": "success", "message": "Member data loaded into state."}
+    else:
+        logging.warning(f"No member found for phone: {phone_number}")
+        tool_context.state["member_name"] = "Valued Member"
+        tool_context.state["is_data_missing"] = True
+        return {"status": "error", "message": "No member found."}
 
 def trigger_dtmf_payment(amount: float, tool_context: ToolContext):
     """Signals the system to hijack the audio for secure PCI card entry."""
@@ -169,12 +181,18 @@ def confirm_verification(user_name: str, tool_context: ToolContext):
 from twilio.rest import Client
 import os
 
-# Initialize Twilio
-account_sid = os.environ['TWILIO_ACCOUNT_SID']
-auth_token = os.environ['TWILIO_AUTH_TOKEN']
-client = Client(account_sid, auth_token)
+# Initialize Twilio (removed global init to prevent import crashes)
+# client = Client(account_sid, auth_token)
 
-def transfer_to_human(ctx: InvocationContext, human_number: str = "+18885550199"):
+def _get_twilio_client():
+    account_sid = os.environ.get('TWILIO_ACCOUNT_SID')
+    auth_token = os.environ.get('TWILIO_AUTH_TOKEN')
+    if not account_sid or not auth_token:
+        logging.error("Twilio credentials missing in environment.")
+        return None
+    return Client(account_sid, auth_token)
+
+def transfer_to_human(tool_context: ToolContext, human_number: str = "+18885550199"):
     """Initiates a warm transfer to a human agent.
     
     Args:
@@ -182,23 +200,38 @@ def transfer_to_human(ctx: InvocationContext, human_number: str = "+18885550199"
                       Defaults to the main support line if not specified.
     """
     try:
-        # Client is already initialized globally as 'client', but for safety in tools we can ensure it exists
-        # or use the one from global scope if available. Relying on global 'client'.
-        
-        call_sid = ctx.session.state.get("call_sid") or ctx.user_id
+        client = _get_twilio_client()
+        if not client:
+             return {"status": "error", "message": "Twilio configuration missing."}
+
+        # Use explicitly stored call_sid from state
+        call_sid = tool_context.state.get("call_sid")
         
         logging.info(f"Initiating transfer for Call SID: {call_sid} to {human_number}")
+
+        if not call_sid:
+             logging.error("No Call SID found in state. Cannot transfer.")
+             return {"status": "error", "message": "Call context missing."}
 
         # We initiate the transfer
         # Note: In a real warm transfer, we often dial the agent, wait for answer, then bridge.
         # This implementation does a 'conference' add or similar logic depending on the platform.
         # Assuming we are adding a participant to the conference:
+        
+        # Build dynamic callback URL
+        domain = os.environ.get("DOMAIN", "").replace("http://", "https://") 
+        # Ensure https 
+        if "https://" not in domain:
+            domain = f"https://{domain}"
+            
+        callback_url = f"{domain}/twilio/transfer-status?parent_call_sid={call_sid}"
+        
         participant = client.conferences(call_sid).participants.create(
             from_=os.environ.get('TWILIO_NUMBER', '+15551234567'), # Fallback for safety
             to=human_number,
             early_media=True,
             # This URL is hit by Twilio when the agent actually picks up
-            status_callback="https://your-api.com/transfer-status",
+            status_callback=callback_url,
             status_callback_event=['answered'] 
         )
         
@@ -216,21 +249,21 @@ def transfer_to_human(ctx: InvocationContext, human_number: str = "+18885550199"
         logging.error(f"Transfer failed: {e}")
         return {"status": "error", "is_agent_joined": False, "message": str(e)}
 
-def end_call(ctx: InvocationContext):
+def end_call(tool_context: ToolContext):
     """Terminates the AI agent's participation in the call (stops listening/speaking).
     
     does NOT hang up the phone line, to ensure the customer stays connected 
     to the human agent in the conference.
     """
     try:
-        call_sid = ctx.session.state.get("call_sid") or ctx.user_id
+        call_sid = tool_context.state.get("call_sid")
         logging.info(f"MetnaAgent leaving conversation for Call SID: {call_sid}")
         
         # update state ensuring loop breaks so the AI stops processing audio
-        ctx.session.state["call_ended"] = True
+        tool_context.state["call_ended"] = True
         
         return "MetnaAgent session ended. Goodbye."
     except Exception as e:
         logging.error(f"Failed to end agent session: {e}")
-        ctx.session.state["call_ended"] = True
+        tool_context.state["call_ended"] = True
         return "MetnaAgent session ended with error."
