@@ -6,6 +6,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from google.adk.tools import ToolContext
+from google.adk.agents.invocation_context import InvocationContext
 
 # --- Constants ---
 # Assuming standard env vars. 
@@ -153,10 +154,6 @@ def send_payment_plan_email(tool_context: ToolContext):
         logging.error(f"Failed to send email: {e}")
         return f"Error sending email: {str(e)}"
 
-def schedule_callback(datetime_str: str, tool_context: ToolContext):
-    """Logs a follow-up call in the CRM/Notes."""
-    # In a real app, this might insert into a 'callbacks' table in the DB
-    return f"Success. I have scheduled a follow-up call for {datetime_str}."
 
 def update_db_balance(account_number: str, amount_paid: float):
     """Updates the DB balance after a success payment."""
@@ -200,8 +197,71 @@ def confirm_verification(user_name: str, tool_context: ToolContext):
     tool_context.state["is_verified"] = True
     return "Verification confirmed. Proceeding to collection."
 
-def hang_up(tool_context: ToolContext):
-    """Signals that the call should be terminated now."""
-    logging.info("hang_up tool called.")
-    tool_context.state["call_ended"] = True
-    return "The call is being terminated. Goodbye."
+from twilio.rest import Client
+import os
+
+# Initialize Twilio
+account_sid = os.environ['TWILIO_ACCOUNT_SID']
+auth_token = os.environ['TWILIO_AUTH_TOKEN']
+client = Client(account_sid, auth_token)
+
+def transfer_to_human(ctx: InvocationContext, human_number: str = "+18885550199"):
+    """Initiates a warm transfer to a human agent.
+    
+    Args:
+        human_number: The phone number of the human agent (E.164 format). 
+                      Defaults to the main support line if not specified.
+    """
+    try:
+        # Client is already initialized globally as 'client', but for safety in tools we can ensure it exists
+        # or use the one from global scope if available. Relying on global 'client'.
+        
+        call_sid = ctx.session.state.get("call_sid") or ctx.user_id
+        
+        logging.info(f"Initiating transfer for Call SID: {call_sid} to {human_number}")
+
+        # We initiate the transfer
+        # Note: In a real warm transfer, we often dial the agent, wait for answer, then bridge.
+        # This implementation does a 'conference' add or similar logic depending on the platform.
+        # Assuming we are adding a participant to the conference:
+        participant = client.conferences(call_sid).participants.create(
+            from_=os.environ.get('TWILIO_NUMBER', '+15551234567'), # Fallback for safety
+            to=human_number,
+            early_media=True,
+            # This URL is hit by Twilio when the agent actually picks up
+            status_callback="https://your-api.com/transfer-status",
+            status_callback_event=['answered'] 
+        )
+        
+        # KEY FIX: Do NOT set is_agent_joined = True yet. 
+        # The external webhook must set this when the agent actually answers.
+        # This allows the "Small Talk" bridge phase to happen.
+        
+        return {
+            "status": "initiated",
+            "is_agent_joined": False, 
+            "message": "Dialing colleague... bridge is active."
+        }
+    
+    except Exception as e:
+        logging.error(f"Transfer failed: {e}")
+        return {"status": "error", "is_agent_joined": False, "message": str(e)}
+
+def end_call(ctx: InvocationContext):
+    """Terminates the AI agent's participation in the call (stops listening/speaking).
+    
+    does NOT hang up the phone line, to ensure the customer stays connected 
+    to the human agent in the conference.
+    """
+    try:
+        call_sid = ctx.session.state.get("call_sid") or ctx.user_id
+        logging.info(f"MetnaAgent leaving conversation for Call SID: {call_sid}")
+        
+        # update state ensuring loop breaks so the AI stops processing audio
+        ctx.session.state["call_ended"] = True
+        
+        return "MetnaAgent session ended. Goodbye."
+    except Exception as e:
+        logging.error(f"Failed to end agent session: {e}")
+        ctx.session.state["call_ended"] = True
+        return "MetnaAgent session ended with error."

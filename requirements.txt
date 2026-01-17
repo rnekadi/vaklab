@@ -1,0 +1,12 @@
+google-adk
+fastapi
+uvicorn
+twilio
+stripe
+pandas
+numpy
+soxr
+python-multipart
+psycopg2-binary
+audioop-lts
+pydub
