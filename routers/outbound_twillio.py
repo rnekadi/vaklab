@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 from twilio.rest import Client
 from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 
-from ..agents.runtime.live_messaging import (
+from agents.runtime.live_messaging import (
     AgentEvent,
     agent_to_client_messaging,
     send_pcm_to_agent,
@@ -17,17 +17,17 @@ from ..agents.runtime.live_messaging import (
     text_to_content,
 )
 
-from debt_collector.entities.twilio import (
+from entities.twilio import (
     TwilioStreamCallbackPayload,
     TwilioVoiceWebhookPayload,
 )
-from debt_collector.utils.audio import (
+from utils.audio import (
     adk_pcm24k_to_twilio_ulaw8k,
     twilio_ulaw8k_to_adk_pcm16k,
 )
-from debt_collector.utils.env import is_local
-from debt_collector.utils.logging import logger
-from debt_collector.utils.security import validate_twilio
+from utils.env import is_local
+from utils.logging import logger
+from utils.security import validate_twilio
 
 
 twilio_path = "/twilio"

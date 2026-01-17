@@ -35,7 +35,7 @@ from google.genai import types
 from google.genai.types import Part, Blob, Content
 from pydantic import BaseModel, Field
 
-from ..debt_agent.agent import root_agent
+from ..outbound_agent.agent import root_agent
 
 
 def text_to_content(text: str, role: Literal["user", "model"] = "user") -> Content:
@@ -43,7 +43,7 @@ def text_to_content(text: str, role: Literal["user", "model"] = "user") -> Conte
     return Content(role=role, parts=[Part(text=text)])
 
 
-APP_NAME = "DEBT COLLECTION AGENT"
+APP_NAME = "METNA OUTBOUND AGENT"
 
 LiveEvents = AsyncGenerator[Event, None]
 
