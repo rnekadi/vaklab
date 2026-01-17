@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 
 # --- Metna Agent (The LLM) ----
 
-# --- Metna Agent (The LLM) ---
-
 class MetnaAgent(LlmAgent):
     def __init__(self, member_data=None):
         # Defaults
