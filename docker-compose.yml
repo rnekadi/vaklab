@@ -1,0 +1,18 @@
+services:
+  db:
+    image: postgres:14
+    container_name: debt_collector_db
+    restart: always
+    environment:
+      # These can be pulled from a .env file automatically
+      POSTGRES_USER: ${DB_USER:-user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-debt_collection_db}
+    volumes:
+      - ./db-init:/docker-entrypoint-initdb.d
+      - postgres_data:/var/lib/postgresql/data # This persists your data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
