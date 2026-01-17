@@ -154,38 +154,7 @@ def send_payment_plan_email(tool_context: ToolContext):
         logging.error(f"Failed to send email: {e}")
         return f"Error sending email: {str(e)}"
 
-
-def update_db_balance(account_number: str, amount_paid: float):
-    """Updates the DB balance after a success payment."""
-    conn = get_db_connection()
-    if not conn:
-        return False
-        
-    try:
-        cur = conn.cursor()
-        # Check current balance first to avoid negative
-        cur.execute("SELECT balance FROM debtors WHERE account_number = %s", (account_number,))
-        res = cur.fetchone()
-        if not res:
-            return False
-            
-        old_balance = res[0]
-        new_balance = max(0, float(old_balance) - amount_paid)
-        
-        cur.execute(
-            "UPDATE debtors SET balance = %s, last_payment_date = NOW() WHERE account_number = %s",
-            (new_balance, account_number)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        logging.error(f"DB Update Error: {e}")
-        if conn:
-            conn.rollback()
-        return False
-    finally:
-        if conn:
-            conn.close()
+   
 
 def confirm_verification(user_name: str, tool_context: ToolContext):
     """Marks the user's identity as successfully verified in the system.
