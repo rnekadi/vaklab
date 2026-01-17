@@ -1,37 +1,15 @@
 import os
 import logging
-import psycopg2
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from google.adk.tools import ToolContext
 from google.adk.agents.invocation_context import InvocationContext
-
-# --- Constants ---
-# Assuming standard env vars. 
-# Defaults provided for safety, but should be set in environment.
-DB_HOST = os.environ.get("DB_HOST", "localhost")
-DB_NAME = os.environ.get("DB_NAME", "debt_collection_db")
-DB_USER = os.environ.get("DB_USER", "user")
-DB_PASS = os.environ.get("DB_PASSWORD", "password")
-
-def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS
-        )
-        return conn
-    except Exception as e:
-        logging.error(f"Failed to connect to DB: {e}")
-        return None
+from utils.db import get_db_connection
 
 def lookup_member_info(phone_number: str, tool_context: ToolContext):
-    """Fetches member data from the 'target_members' table using phone number."""
+    """Fetches member data from the 'target_members_detail' table using phone number."""
     logging.info(f"lookup_member_info called with phone: {phone_number}")
     conn = get_db_connection()
     if not conn:
@@ -42,8 +20,8 @@ def lookup_member_info(phone_number: str, tool_context: ToolContext):
         cur = conn.cursor()
         # Query matching the new schema for Healthy Habits campaign
         query = """
-            SELECT member_id, member_first_name, member_last_name, member_email, campaign_targeted_for, csr_name, csr_phone_number
-            FROM target_members
+            SELECT member_id, member_first_name, member_last_name, member_email, campaign_name, csr_name, csr_phone_number
+            FROM target_members_detail
             WHERE phone_number = %s
         """
         cur.execute(query, (phone_number,))
@@ -58,8 +36,6 @@ def lookup_member_info(phone_number: str, tool_context: ToolContext):
             tool_context.state["email"] = email
             tool_context.state["campaign_name"] = campaign
             tool_context.state["csr_name"] = csr_name
-            # We might want to store the internal transfer number if dynamic
-            # tool_context.state["transfer_number"] = csr_phone 
             
             logging.info(f"Member found: {first_name} {last_name}, Campaign: {campaign}")
             return {"status": "success", "message": "Member data loaded into state."}
